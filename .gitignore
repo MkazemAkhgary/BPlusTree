@@ -1,0 +1,9 @@
+﻿################################################################################
+# This .gitignore file was automatically created by Microsoft(R) Visual Studio.
+################################################################################
+
+/BPlusTree/BPlusTree/obj
+/BPlusTree/.vs/BPlusTree/v15/Server/sqlite3
+/.vs
+/BPlusTree/.vs/BPlusTree/v15
+/BPlusTree/BPlusTree/bin/Debug/netstandard2.0
