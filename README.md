@@ -4,7 +4,7 @@ This is an implmentation of B+ tree in c# 7.2
 
 Its simple to use and is also flexible. if you have questions feel free to ask.
 
-this implementation does perform spill/borrow before split/merge when a modified node overflow or underflows.
+this implementation does perform spill/borrow operations before split/merge when a modifying bucket overflows or underflows.
 
 also there is a builder that supports bulkloading for efficient initialization, which is useful for loading large data sets.
 
