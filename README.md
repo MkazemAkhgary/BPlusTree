@@ -180,7 +180,7 @@ It has special Split/Merge operations dedicated to b+ tree.
 
 # Remarks
 
- - This collection is not thread safe. a concurrent version of this collection will be included in future.
+ - B+ Tree collection is not thread safe. a concurrent version of this collection may be included in future.
 
 # Implementation details
 
