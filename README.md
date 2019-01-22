@@ -187,3 +187,4 @@ It has special Split/Merge operations dedicated to b+ tree.
  - When a node overflows it will give an item to adjacent siblings if possible, other wise the node is split to two nodes.
  - When a node underflows it will take an item from adjacent siblings if possible, other wise the node is merged with one of the siblings.
  - Underlying array of nodes is a special collection designed for faster insertion/removal operations.
+ - B+ Tree supports append, prepend and trim from both ends. it means if order of an entry is lower or higher than all other entries, add/remove operations are done at O(1) speed. (O(log N) amortized)
