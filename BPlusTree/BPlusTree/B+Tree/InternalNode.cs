@@ -1,22 +1,15 @@
 ﻿using System;
 using System.Diagnostics;
-using System.Linq;
 
 namespace BPlusTree
 {
     public partial class BPTree<TKey, TValue>
     {
-        [DebuggerDisplay("{ToString()}")]
-        private sealed class InternalNode : Node
+        private sealed partial class InternalNode : Node
         {
             public readonly RingArray<KeyNodeItem> Items;
 
-            public Node Left; // left most child. 
-
-            public override string ToString()
-            {
-                return $"{{{string.Join(", ",Items.Select(x => x.Key))}}}/{{{Left}, {string.Join(", ", Items.Select(x => x.Right))}}}";
-            }
+            public Node Left; // left most child.
 
             #region Constructors
 
@@ -27,7 +20,7 @@ namespace BPlusTree
 
             public InternalNode(int capacity)
             {
-                Items = new RingArray<KeyNodeItem>(capacity);
+                Items = RingArray<KeyNodeItem>.NewFixedCapacityArray(capacity);
             }
 
             #endregion
@@ -68,7 +61,7 @@ namespace BPlusTree
 
             #region Insert
 
-            public override KeyNodeItem? Insert<TArg>(in InsertArguments<TArg> args, in NodeRelatives relatives)
+            public override KeyNodeItem? Insert<TArg>(ref InsertArguments<TArg> args, in NodeRelatives relatives)
             {
                 var index = Find(args.Key, args.Comparer);
 
@@ -81,7 +74,7 @@ namespace BPlusTree
                 // get child to traverse through.
                 var child = GetChild(index);
                 var childRelatives = NodeRelatives.Create(child, index, this, relatives);
-                var rightChild = child.Insert(args, childRelatives);
+                var rightChild = child.Insert(ref args, childRelatives);
 
                 if (rightChild is KeyNodeItem middle) // if splitted, add middle key to this node.
                 {
@@ -110,14 +103,17 @@ namespace BPlusTree
                             #endregion
 
                             var first = Items.InsertPopFirst(index, middle);
-
-                            Swap(ref Left, ref first.Right); // swap left and right pointers.
+                            
+                            KeyNodeItem.SwapRightWith(ref first, ref Left); // swap left and right pointers.
 
                             var pl = relatives.LeftAncestor.Items[relatives.LeftAncestorIndex];
-                            Swap(ref pl.Key, ref first.Key); // swap ancestor key with item.
+                            KeyNodeItem.SwapKeys(ref pl, ref first); // swap ancestor key with item.
                             relatives.LeftAncestor.Items[relatives.LeftAncestorIndex] = pl;
 
                             leftSibling.Items.PushLast(first);
+
+                            Validate(this);
+                            Validate(leftSibling);
                         }
                         else if (CanSpillTo(relatives.RightSibling, out var rightSibling)) // if right sibling has space
                         {
@@ -132,14 +128,17 @@ namespace BPlusTree
                             #endregion
 
                             var last = Items.InsertPopLast(index, middle);
-
-                            Swap(ref rightSibling.Left, ref last.Right); // swap left and right pointers.
+                            
+                            KeyNodeItem.SwapRightWith(ref last, ref rightSibling.Left); // swap left and right pointers.
 
                             var pr = relatives.RightAncestor.Items[relatives.RightAncestorIndex];
-                            Swap(ref pr.Key, ref last.Key); // swap ancestor key with item.
+                            KeyNodeItem.SwapKeys(ref pr, ref last); // swap ancestor key with item.
                             relatives.RightAncestor.Items[relatives.RightAncestorIndex] = pr;
 
                             rightSibling.Items.PushFirst(last);
+
+                            Validate(this);
+                            Validate(rightSibling);
                         }
                         else // split, then promote middle item
                         {
@@ -189,12 +188,11 @@ namespace BPlusTree
                             }
 
                             rightNode.Left = middle.Right;
-                            middle.Right = rightNode;
+                            KeyNodeItem.ChangeRight(ref middle, rightNode);
                             rightChild = middle;
 
-                            Debug.Assert(IsHalfFull);
-                            Debug.Assert(rightNode.IsHalfFull);
-                            Debug.Assert(rightNode.Left != null);
+                            Validate(this);
+                            Validate(rightNode);
                         }
                     }
 
@@ -202,13 +200,6 @@ namespace BPlusTree
                     {
                         inode = (InternalNode)node;
                         return inode?.IsFull == false;
-                    }
-
-                    void Swap<T>(ref T t1, ref T t2)
-                    {
-                        var temp = t1;
-                        t1 = t2;
-                        t2 = temp;
                     }
                 }
 
@@ -240,43 +231,53 @@ namespace BPlusTree
                         if (CanBorrowFrom(relatives.LeftSibling, out InternalNode leftSibling))
                         {
                             var last = leftSibling.Items.PopLast();
-
-                            Swap(ref Left, ref last.Right); // swap left and right pointers.
+                            
+                            KeyNodeItem.SwapRightWith(ref last, ref Left); // swap left and right pointers.
 
                             var pr = relatives.LeftAncestor.Items[relatives.LeftAncestorIndex];
-                            Swap(ref pr.Key, ref last.Key); // swap ancestor key with item.
+                            KeyNodeItem.SwapKeys(ref pr, ref last); // swap ancestor key with item.
                             relatives.LeftAncestor.Items[relatives.LeftAncestorIndex] = pr;
 
                             Items.PushFirst(last);
+
+                            Validate(this);
+                            Validate(leftSibling);
                         }
                         else if (CanBorrowFrom(relatives.RightSibling, out InternalNode rightSibling))
                         {
                             var first = rightSibling.Items.PopFirst();
 
-                            Swap(ref rightSibling.Left, ref first.Right); // swap left and right pointers.
+                            KeyNodeItem.SwapRightWith(ref first, ref rightSibling.Left); // swap left and right pointers.
 
                             var pl = relatives.RightAncestor.Items[relatives.RightAncestorIndex];
-                            Swap(ref pl.Key, ref first.Key); // swap ancestor key with item.
+                            KeyNodeItem.SwapKeys(ref pl, ref first); // swap ancestor key with item.
                             relatives.RightAncestor.Items[relatives.RightAncestorIndex] = pl;
 
                             Items.PushLast(first);
+
+                            Validate(this);
+                            Validate(rightSibling);
                         }
                         else // merge
                         {
                             merge = true;
-                            if (relatives.HasTrueLeftSibling)
+                            if (relatives.HasTrueLeftSibling) // current node will be removed from parent
                             {
                                 var pkey = relatives.LeftAncestor.Items[relatives.LeftAncestorIndex].Key; // demote key
                                 var mid = new KeyNodeItem(pkey, Left); 
                                 leftSibling.Items.PushLast(mid);
-                                leftSibling.Items.MergeLeft(Items); // merge from left to keep items in order. (current node will be removed from parent)
+                                leftSibling.Items.MergeLeft(Items); // merge from left to keep items in order.
+
+                                Validate(leftSibling);
                             }
-                            else if (relatives.HasTrueRightSibling)
+                            else if (relatives.HasTrueRightSibling) // right sibling will be removed from parent
                             {
                                 var pkey = relatives.RightAncestor.Items[relatives.RightAncestorIndex].Key; // demote key
                                 var mid = new KeyNodeItem(pkey, rightSibling.Left);
                                 Items.PushLast(mid);
-                                Items.MergeLeft(rightSibling.Items); // merge from right to keep items in order. (right sibling will be removed from parent)
+                                Items.MergeLeft(rightSibling.Items); // merge from right to keep items in order.
+
+                                Validate(this);
                             }
                         }
                     }
@@ -287,16 +288,21 @@ namespace BPlusTree
                         if (inode == null) return false;
                         return inode.Items.Count > inode.Items.Capacity / 2;
                     }
-
-                    void Swap<T>(ref T t1, ref T t2)
-                    {
-                        var temp = t1;
-                        t1 = t2;
-                        t2 = temp;
-                    }
                 }
 
                 return merge; // true if merge happened.
+            }
+
+            #endregion
+            
+            #region Debug
+
+            [Conditional("DEBUG")]
+            private static void Validate(InternalNode node)
+            {
+                if (node == null) return;
+                Debug.Assert(node.IsHalfFull);
+                Debug.Assert(node.Left != null);
             }
 
             #endregion

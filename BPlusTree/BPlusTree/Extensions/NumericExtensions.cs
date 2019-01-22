@@ -1,7 +1,10 @@
-﻿namespace BPlusTree
+﻿using System.Runtime.CompilerServices;
+
+namespace BPlusTree
 {
-    using System.Runtime.CompilerServices;
-    
+    /// <summary>
+    /// provides some mathematic and numeric extensions.
+    /// </summary>
     internal static class NumericExtensions
     {
         /// <summary>

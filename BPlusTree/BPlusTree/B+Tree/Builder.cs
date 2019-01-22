@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Linq;
 
 namespace BPlusTree
 {
@@ -103,13 +104,13 @@ namespace BPlusTree
                     var item = new KeyValueItem(key, addFunction((key, arg)));
                     _currentLeaf = NewLeafNode(item);
                     _linkList = _currentLeaf; // initialize linked list
-                    nodes = new RingArray<Node>(32) { _currentLeaf };
+                    nodes = RingArray<Node>.NewArray(Enumerable.Repeat(_currentLeaf, 1), 32);
                     _height = _count = 1;
                     _initialize = false;
                 }
                 else if (!_bulkLoading)
                 {
-                    _tree.Add(key, arg, addFunction, updateFunction);
+                    _tree.AddOrUpdateFromArg(key, arg, addFunction, updateFunction);
                 }
                 else
                 {
@@ -118,13 +119,13 @@ namespace BPlusTree
                     if (c == 0)
                     {
                         var lastItem = _currentLeaf.Items.Last;
-                        lastItem.Value = updateFunction((key, arg, lastItem.Value));
+                        KeyValueItem.ChangeValue(ref lastItem, updateFunction((key, arg, lastItem.Value)));
                         _currentLeaf.Items.Last = lastItem;
                     }
                     else if (c < 0) // insertions are not in order
                     {
                         // switch to iterative insertion mode.
-                        Build().Add(key, arg, addFunction, updateFunction);
+                        Build().AddOrUpdateFromArg(key, arg, addFunction, updateFunction);
                     }
                     else
                     {
@@ -138,6 +139,7 @@ namespace BPlusTree
                         {
                             var newLeaf = NewLeafNode(item);
                             _currentLeaf.Next = newLeaf; // build linked list
+                            newLeaf.Previous = _currentLeaf;
                             _currentLeaf = newLeaf;
                             nodes.PushLast(_currentLeaf);
                         }
@@ -247,8 +249,18 @@ namespace BPlusTree
                     }
                 }
 
+                var lastLeaf = _root;
+                if (lastLeaf != null)
+                {
+                    while (!lastLeaf.IsLeaf) // find last leaf
+                    {
+                        lastLeaf = ((InternalNode)lastLeaf).GetLastChild();
+                    }
+                }
+
                 _tree.Root = _root;
                 _tree.LinkList = _linkList;
+                _tree.ReverseLinkList = (LeafNode)lastLeaf;
                 _tree.Count = _count;
                 _tree.Height = _height;
                 _bulkLoading = false; // tree is built.

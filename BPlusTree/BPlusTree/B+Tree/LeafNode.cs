@@ -1,22 +1,17 @@
 ﻿using System.Diagnostics;
-using System.Linq;
 
 namespace BPlusTree
 {
     public partial class BPTree<TKey, TValue>
     {
-        [DebuggerDisplay("{ToString()}")]
-        private sealed class LeafNode : Node
+        private sealed partial class LeafNode : Node
         {
             public readonly RingArray<KeyValueItem> Items;
 
-            public LeafNode Next; // leaf node siblings are linked to gether to make linked list.
-            
-            public override string ToString()
-            {
-                return $"[{string.Join(", ", Items.Select(x => x.Key))}]";
-            }
-            
+            // leaf node siblings are linked to gether to make doubly linked list.
+            public LeafNode Previous;
+            public LeafNode Next;
+
             #region Constructors
 
             public LeafNode(RingArray<KeyValueItem> items)
@@ -26,7 +21,7 @@ namespace BPlusTree
 
             public LeafNode(int capacity)
             {
-                Items = new RingArray<KeyValueItem>(capacity);
+                Items = RingArray<KeyValueItem>.NewFixedCapacityArray(capacity);
             }
 
             #endregion
@@ -51,14 +46,11 @@ namespace BPlusTree
             public override Node GetChild(int index) => null;
             public override Node GetNearestChild(TKey key, NodeComparer comparer) => null;
 
-            public KeyValueItem GetLastItem() => Items.Last;
-            public KeyValueItem GetFirstItem() => Items.First;
-
             #endregion
 
             #region Insert
 
-            public override KeyNodeItem? Insert<TArg>(in InsertArguments<TArg> args, in NodeRelatives relatives)
+            public override KeyNodeItem? Insert<TArg>(ref InsertArguments<TArg> args, in NodeRelatives relatives)
             {
                 KeyNodeItem? rightLeaf = null;
 
@@ -78,25 +70,31 @@ namespace BPlusTree
                     }
                     else // cant add, spill or split
                     {
-                        if (CanSpillTo(relatives.LeftSibling, out var leftSibling))
+                        if (CanSpillTo(Previous))
                         {
                             var first = Items.InsertPopFirst(index, item);
-                            leftSibling.Items.PushLast(first); // move smallest item to left sibling.
+                            Previous.Items.PushLast(first); // move smallest item to left sibling.
 
                             // update ancestors key.
                             var pl = relatives.LeftAncestor.Items[relatives.LeftAncestorIndex];
-                            pl.Key = Items.First.Key;
+                            KeyNodeItem.ChangeKey(ref pl, Items.First.Key);
                             relatives.LeftAncestor.Items[relatives.LeftAncestorIndex] = pl;
+
+                            Validate(this);
+                            Validate(Previous);
                         }
-                        else if (CanSpillTo(relatives.RightSibling, out var rightSibling))
+                        else if (CanSpillTo(Next))
                         {
                             var last = Items.InsertPopLast(index, item);
-                            rightSibling.Items.PushFirst(last);
+                            Next.Items.PushFirst(last);
 
                             // update ancestors key.
                             var pr = relatives.RightAncestor.Items[relatives.RightAncestorIndex];
-                            pr.Key = last.Key;
+                            KeyNodeItem.ChangeKey(ref pr, last.Key);
                             relatives.RightAncestor.Items[relatives.RightAncestorIndex] = pr;
+
+                            Validate(this);
+                            Validate(Next);
                         }
                         else // split, then promote middle item
                         {
@@ -116,8 +114,8 @@ namespace BPlusTree
 
                             rightLeaf = new KeyNodeItem(rightNode.Items.First.Key, rightNode);
 
-                            Debug.Assert(IsHalfFull);
-                            Debug.Assert(rightNode.IsHalfFull);
+                            Validate(this);
+                            Validate(rightNode);
                         }
                     }
 
@@ -125,21 +123,25 @@ namespace BPlusTree
                     LeafNode SplitRight()
                     {
                         var right = new LeafNode(Items.SplitRight());
-                        right.Next = Next; // to make linked list.
+                        if (Next != null)
+                        {
+                            Next.Previous = right;
+                            right.Next = Next; // to make linked list.
+                        }
+                        right.Previous = this;
                         Next = right;
                         return right;
                     }
 
-                    bool CanSpillTo(Node node, out LeafNode leaf)
+                    bool CanSpillTo(LeafNode leaf)
                     {
-                        leaf = (LeafNode)node;
                         return leaf?.IsFull == false;
                     }
                 }
                 else
                 {
                     var item = Items[index]; // old item
-                    args.UpdateValue(ref item.Value); // update item value
+                    KeyValueItem.ChangeValue(ref item, args.GetUpdateValue(item.Value)); // update item value
                     Items[index] = item; // set new item
                 }
 
@@ -163,49 +165,76 @@ namespace BPlusTree
 
                     if (!IsHalfFull) // borrow or merge
                     {
-                        if (CanBorrowFrom(relatives.LeftSibling, out var leftSibling))
+                        if (CanBorrowFrom(Previous)) // left sibling
                         {
-                            var last = leftSibling.Items.PopLast();
+                            var last = Previous.Items.PopLast();
                             Items.PushFirst(last);
 
                             var p = relatives.LeftAncestor.Items[relatives.LeftAncestorIndex];
-                            p.Key = last.Key;
+                            KeyNodeItem.ChangeKey(ref p, last.Key);
                             relatives.LeftAncestor.Items[relatives.LeftAncestorIndex] = p;
+
+                            Validate(this);
+                            Validate(Previous);
                         }
-                        else if (CanBorrowFrom(relatives.RightSibling, out var rightSibling))
+                        else if (CanBorrowFrom(Next)) // right sibling
                         {
-                            var first = rightSibling.Items.PopFirst();
+                            var first = Next.Items.PopFirst();
                             Items.PushLast(first);
 
                             var p = relatives.RightAncestor.Items[relatives.RightAncestorIndex];
-                            p.Key = rightSibling.Items.First.Key;
+                            KeyNodeItem.ChangeKey(ref p, Next.Items.First.Key);
                             relatives.RightAncestor.Items[relatives.RightAncestorIndex] = p;
+                            
+                            Validate(this);
+                            Validate(Next);
                         }
                         else // merge with either sibling.
                         {
                             merge = true; // set merge falg
-                            if (relatives.HasTrueLeftSibling)
+                            if (relatives.HasTrueLeftSibling) // current node will be removed from parent.
                             {
-                                leftSibling.Items.MergeLeft(Items); // merge from left to keep items in order. (current node will be removed from parent)
-                                leftSibling.Next = rightSibling; // fix linked list
+                                Previous.Items.MergeLeft(Items); // merge from left to keep items in order.
+                                Previous.Next = Next; // fix linked list
+                                if (Next != null) Next.Previous = Previous;
+                                
+                                Validate(Previous);
+                                Validate(Next);
                             }
-                            else if (relatives.HasTrueRightSibling)
+                            else if (relatives.HasTrueRightSibling) // right sibling will be removed from parent
                             {
-                                Items.MergeLeft(rightSibling.Items); // merge from right to keep items in order. (right sibling will be removed from parent)
-                                Next = rightSibling.Next;
+                                Items.MergeLeft(Next.Items); // merge from right to keep items in order. 
+                                Next = Next.Next; // fix linked list
+                                if (Next != null) Next.Previous = this;
+
+                                Validate(this);
+                                Validate(Next);
                             }
+                            else Debug.Fail("leaf must either have true left or true right sibling.");
                         }
                     }
 
-                    bool CanBorrowFrom(Node node, out LeafNode leaf)
+                    bool CanBorrowFrom(LeafNode leaf)
                     {
-                        leaf = (LeafNode)node;
                         if (leaf == null) return false;
                         return leaf.Items.Count > leaf.Items.Capacity / 2;
                     }
                 }
 
                 return merge; // true if merge happened.
+            }
+
+            #endregion
+
+            #region Debug
+            
+            [Conditional("DEBUG")]
+            private static void Validate(LeafNode node)
+            {
+                if (node == null) return;
+                Debug.Assert(node.IsHalfFull);
+                Debug.Assert(node.Previous == null || node.Previous.Next == node);
+                Debug.Assert(node.Next == null || node.Next.Previous == node);
             }
 
             #endregion

@@ -11,12 +11,12 @@ namespace BPlusTree
         /// <summary>
         /// base class for internal nodes and leaf nodes.
         /// </summary>
-        private abstract class Node
+        private abstract partial class Node
         {
             /// <summary>
             /// inserts an item to a node. if node splits, right split is returned other wise null is returned.
             /// </summary>
-            public abstract KeyNodeItem? Insert<TArg>(in InsertArguments<TArg> args, in NodeRelatives relatives);
+            public abstract KeyNodeItem? Insert<TArg>(ref InsertArguments<TArg> args, in NodeRelatives relatives);
 
             /// <summary>
             /// removes an item from a node. if node merges, returns ture. other wise returns false. 
@@ -70,16 +70,20 @@ namespace BPlusTree
         /// represents a value associated with a key.
         /// used for searching and storing items in leaf.
         /// </summary>
-        [DebuggerDisplay("Key: {Key}, Value: {Value}")]
-        private struct KeyValueItem
+        private readonly partial struct KeyValueItem
         {
-            public TKey Key;
-            public TValue Value;
+            public readonly TKey Key;
+            public readonly TValue Value;
             
             public KeyValueItem(TKey key, TValue value)
             {
                 Key = key;
                 Value = value;
+            }
+            
+            public static void ChangeValue(ref KeyValueItem item, TValue newValue)
+            {
+                item = new KeyValueItem(item.Key, newValue);
             }
         }
 
@@ -91,16 +95,39 @@ namespace BPlusTree
         /// represents a key and a pointer to right child.
         /// used for searching and storing items in internal nodes.
         /// </summary>
-        [DebuggerDisplay("Key: {Key}, Right: {Right}")]
-        private struct KeyNodeItem
+        private readonly partial struct KeyNodeItem
         {
-            public TKey Key;
-            public Node Right;
+            public readonly TKey Key;
+            public readonly Node Right;
 
             public KeyNodeItem(TKey key, Node right)
             {
                 Key = key;
                 Right = right;
+            }
+            
+            public static void ChangeKey(ref KeyNodeItem item, TKey newKey)
+            {
+                item = new KeyNodeItem(newKey, item.Right);
+            }
+
+            public static void SwapKeys(ref KeyNodeItem x, ref KeyNodeItem y)
+            {
+                var xKey = x.Key;
+                ChangeKey(ref x, y.Key);
+                ChangeKey(ref y, xKey);
+            }
+            
+            public static void ChangeRight(ref KeyNodeItem item, Node newRight)
+            {
+                item = new KeyNodeItem(item.Key, newRight);
+            }
+            
+            public static void SwapRightWith(ref KeyNodeItem item, ref Node pointer)
+            {
+                var temp = pointer;
+                pointer = item.Right;
+                item = new KeyNodeItem(item.Key, temp);
             }
         }
 
@@ -134,7 +161,7 @@ namespace BPlusTree
         /// <summary>
         /// contains reaonly arguments for insert operation.
         /// </summary>
-        private readonly ref struct InsertArguments<TArg>
+        private ref struct InsertArguments<TArg>
         {
             public readonly TKey Key;
             private readonly TArg Arg; // optional argument, can be TValue or any helper value.
@@ -142,14 +169,20 @@ namespace BPlusTree
             private readonly Func<(TKey key, TArg arg, TValue oldValue), TValue> UpdateFunction;
             public readonly NodeComparer Comparer;
 
+            /// <summary>
+            /// true if item was added and not updated.
+            /// </summary>
+            public bool Added { get; private set; }
+
             public TValue GetValue() // get value
             {
+                Added = true;
                 return AddFunction((Key, Arg));
             }
 
-            public void UpdateValue(ref TValue oldVal) // update value
+            public TValue GetUpdateValue(TValue oldVal) // get update value
             {
-                oldVal = UpdateFunction((Key, Arg, oldVal));
+                return UpdateFunction((Key, Arg, oldVal));
             }
 
             public InsertArguments(in TKey key, in TArg arg,
@@ -161,6 +194,8 @@ namespace BPlusTree
                 AddFunction = addFunction;
                 UpdateFunction = updateValue;
                 Comparer = comparer;
+
+                Added = false;
             }
         }
 
@@ -176,13 +211,23 @@ namespace BPlusTree
             public readonly TKey Key;
             public readonly NodeComparer Comparer;
 
-            public TValue Value; // result is set once when the value is found at leaf node.
-            public bool Removed; // true if item is removed.
+            /// <summary>
+            /// result is set once when the value is found at leaf node.
+            /// </summary>
+            public TValue Value { get; private set; }
 
-            public RemoveArguments(in TKey key, in NodeComparer comparer) : this()
+            /// <summary>
+            /// true if item is removed.
+            /// </summary>
+            public bool Removed { get; private set; }
+
+            public RemoveArguments(in TKey key, in NodeComparer comparer)
             {
                 Key = key;
                 Comparer = comparer;
+
+                Value = default;
+                Removed = false;
             }
 
             public void SetRemovedValue(TValue value)

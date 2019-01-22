@@ -1,6 +1,8 @@
 ﻿using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
+using System.Linq;
 
 namespace BPlusTree
 {
@@ -9,10 +11,15 @@ namespace BPlusTree
     /// always chooses minimum shift direction to insert or remove an item.
     /// supports split and merge and binary search.
     /// </summary>
-    public class RingArray<T> : IList<T>, IReadOnlyList<T>
+    [DebuggerTypeProxy(typeof(RingArray<>.DebugView))]
+    [DebuggerDisplay("Count = {Count}{IsRotated ? \", Rotated\" : System.String.Empty,nq}")]
+    public sealed class RingArray<T> : IList<T>, IReadOnlyList<T>
     {
+        private const int DefaultCapacity = 4;
+
         private T[] array;
         private int Start; // index of first item.
+        private int version;
         
         #region Properties
 
@@ -37,7 +44,7 @@ namespace BPlusTree
         public bool IsHalfFull => Count >= Capacity / 2;
 
         /// <inheritdoc />
-        bool ICollection<T>.IsReadOnly => false;
+        bool ICollection<T>.IsReadOnly => Constraints != RingArrayConstraints.ReadOnly;
 
         /// <summary>
         /// number of items in this array.
@@ -47,7 +54,35 @@ namespace BPlusTree
         /// <summary>
         /// current capacity of array. 
         /// </summary>
-        public int Capacity => array.Length;
+        public int Capacity
+        {
+            get
+            {
+                return array.Length;
+            }
+            private set
+            {
+                var newArr = new T[value];
+
+                if (IsRotated)
+                {
+                    Array.Copy(array, Start, newArr, 0, Capacity - Start);
+                    Array.Copy(array, 0, newArr, Capacity - Start, Start + Count - Capacity);
+                }
+                else
+                {
+                    Array.Copy(array, Start, newArr, 0, Count);
+                }
+
+                array = newArr;
+                Start = 0;
+            }
+        }
+
+        /// <summary>
+        /// constraints for this array.
+        /// </summary>
+        public RingArrayConstraints Constraints { get; }
 
         /// <summary>
         /// retrieves last item from the array.
@@ -55,8 +90,8 @@ namespace BPlusTree
         /// <exception cref="InvalidOperationException">throws exception if array is empty.</exception>
         public T Last
         {
-            get => Get(Count - 1);
-            set => Set(Count - 1, value);
+            get => this[Count - 1];
+            set => this[Count - 1] = value;
         }
 
         /// <summary>
@@ -65,41 +100,80 @@ namespace BPlusTree
         /// <exception cref="InvalidOperationException">throws exception if array is empty.</exception>
         public T First
         {
-            get => array[Start];
-            set => array[Start] = value;
+            get => this[0];
+            set => this[0] = value;
         }
 
         #endregion
 
         #region Constructors
 
+        private RingArray(T[] array, int count, int start, RingArrayConstraints constraints)
+        {
+            this.array = array;
+            this.Count = count;
+            this.Start = start;
+            this.version = 0;
+            this.Constraints = constraints;
+        }
+        
         /// <summary>
         /// initializes a new instance of <see cref="RingArray{T}"/>.
         /// </summary>
         /// <exception cref="ArgumentOutOfRangeException"></exception>
-        public RingArray(int capacity)
+        public static RingArray<T> NewArray(int capacity = DefaultCapacity)
         {
             if (capacity < 0) throw new ArgumentOutOfRangeException(nameof(capacity));
-            array = new T[capacity];
-            Count = 0;
-            Start = 0;
+            return new RingArray<T>(new T[capacity], 0, 0, RingArrayConstraints.None);
         }
 
-        //public RingArray(IEnumerable<T> enumerable)
-        //{
-        //    array = enumerable?.ToArray() ?? throw new ArgumentNullException(nameof(enumerable));
-        //    Start = 0;
-        //    Length = array.Length;
-        //}
+        public static RingArray<T> NewArray(IEnumerable<T> source, int initialCapacity = DefaultCapacity)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (initialCapacity < 0) throw new ArgumentOutOfRangeException(nameof(initialCapacity));
+            var array = NewArray(initialCapacity);
+            foreach (var x in source) array.PushLast(x);
+            array.version = 0;
+            return array;
+        }
 
-        //public RingArray(T[] array, int start, int initialLength)
-        //{
-        //    if (start < 0 || start >= array.Length) throw new ArgumentOutOfRangeException(nameof(start));
-        //    if (initialLength < 0 || initialLength > array.Length) throw new ArgumentOutOfRangeException(nameof(initialLength));
-        //    this.array = array?.ToArray() ?? throw new ArgumentNullException(nameof(array));
-        //    Start = start;
-        //    Length = initialLength;
-        //}
+        public static RingArray<T> NewFixedCapacityArray(int capacity)
+        {
+            if (capacity < 0) throw new ArgumentOutOfRangeException(nameof(capacity));
+            return new RingArray<T>(new T[capacity], 0, 0, RingArrayConstraints.FixedCapacity);
+        }
+
+        public static RingArray<T> NewFixedCapacityArray(IEnumerable<T> source, int additionalCapacity, int initialCapacity = DefaultCapacity)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (additionalCapacity < 0) throw new ArgumentOutOfRangeException(nameof(additionalCapacity));
+            if (initialCapacity < 0) throw new ArgumentOutOfRangeException(nameof(initialCapacity));
+            var ring = NewArray(source, initialCapacity);
+            if(additionalCapacity != 0) ring.Capacity = ring.Count + additionalCapacity;
+            return new RingArray<T>(ring.array, ring.Count, ring.Start, RingArrayConstraints.FixedCapacity);
+        }
+
+        public static RingArray<T> NewFixedSizeArray(int size)
+        {
+            if (size < 0) throw new ArgumentOutOfRangeException(nameof(size));
+            return new RingArray<T>(new T[size], size, 0, RingArrayConstraints.FixedSize);
+        }
+
+        public static RingArray<T> NewFixedSizeArray(IEnumerable<T> source, int initialCapacity = DefaultCapacity)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (initialCapacity < 0) throw new ArgumentOutOfRangeException(nameof(initialCapacity));
+            var ring = NewFixedCapacityArray(source, 0, initialCapacity);
+            return new RingArray<T>(ring.array, ring.Count, ring.Start, RingArrayConstraints.FixedSize);
+        }
+
+        public static RingArray<T> NewReadOnlyArray(IEnumerable<T> source, int initialCapacity = DefaultCapacity)
+        {
+            if (source == null) throw new ArgumentNullException(nameof(source));
+            if (initialCapacity < 0) throw new ArgumentOutOfRangeException(nameof(initialCapacity));
+            var ring = NewFixedSizeArray(source, initialCapacity);
+            return new RingArray<T>(ring.array, ring.Count, ring.Start, RingArrayConstraints.ReadOnly);
+        }
 
         #endregion
 
@@ -109,7 +183,15 @@ namespace BPlusTree
         /// inserts an item in this array with minimum shift required.
         /// </summary>
         /// <exception cref="IndexOutOfRangeException"></exception>
-        public virtual void Insert(int index, T item)
+        public void Insert(int index, T item)
+        {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not insert to fixed size collection.");
+
+            InsertInternal(index, item);
+        }
+
+        private void InsertInternal(int index, T item)
         {
             if (OutOfRangeExclusive(index)) throw new IndexOutOfRangeException(nameof(index));
             if (Count >= Capacity) ExpandCapacity();
@@ -130,6 +212,7 @@ namespace BPlusTree
             }
 
             Count++;
+            version++;
         }
 
         /// <summary>
@@ -137,7 +220,15 @@ namespace BPlusTree
         /// </summary>
         /// <exception cref="IndexOutOfRangeException"></exception>
         /// <exception cref="InvalidOperationException">no items to remove.</exception>
-        public virtual T RemoveAt(int index)
+        public T RemoveAt(int index)
+        {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not remove from fixed size collection.");
+
+            return RemoveAtInternal(index);
+        }
+
+        private T RemoveAtInternal(int index)
         {
             if (Count <= 0) throw new InvalidOperationException("no items to remove");
             if (OutOfRange(index)) throw new IndexOutOfRangeException(nameof(index));
@@ -160,6 +251,7 @@ namespace BPlusTree
             }
 
             Count--;
+            version++;
             return item;
         }
 
@@ -168,9 +260,11 @@ namespace BPlusTree
         /// </summary>
         public bool Remove(T item)
         {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not remove from fixed size collection.");
             var index = IndexOf(item);
             if (index < 0) return false;
-            RemoveAt(index);
+            RemoveAtInternal(index);
             return true;
         }
 
@@ -197,7 +291,7 @@ namespace BPlusTree
             {
                 for (; i < Capacity; i++)
                 {
-                    if (comparer.Equals(item, array[i])) // remove if item is found
+                    if (comparer.Equals(item, array[i])) // if item is found
                     {
                         return i - Start; // convert abs index to relative
                     }
@@ -208,7 +302,7 @@ namespace BPlusTree
             }
             for (; i < end; i++)
             {
-                if (comparer.Equals(item, array[i])) // remove if item is found
+                if (comparer.Equals(item, array[i])) // if item is found
                 {
                     return i - Start + fix;
                 }
@@ -229,11 +323,20 @@ namespace BPlusTree
         /// </summary>
         public void PushFirst(T item)
         {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not insert to fixed size collection.");
+
+            PushFirstInternal(item);
+        }
+
+        private void PushFirstInternal(T item)
+        {
             if (Count >= Capacity) ExpandCapacity();
 
             DecrementStart();
-            First = item;
+            array[Start] = item;
             Count++;
+            version++;
         }
 
         /// <summary>
@@ -241,10 +344,19 @@ namespace BPlusTree
         /// </summary>
         public void PushLast(T item)
         {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not insert to fixed size collection.");
+
+            PushLastInternal(item);
+        }
+
+        private void PushLastInternal(T item)
+        {
             if (Count >= Capacity) ExpandCapacity();
 
             Count++;
-            Last = item;
+            Set(Count - 1, item);
+            version++;
         }
 
         /// <summary>
@@ -253,12 +365,21 @@ namespace BPlusTree
         /// <exception cref="InvalidOperationException">no items to remove.</exception>
         public T PopFirst()
         {
-            if (Count <= 0) throw new InvalidOperationException("no items to remove.");
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not remove from fixed size collection.");
             
-            var temp = First;
-            First = default(T);
+            return PopFirstInternal();
+        }
+
+        private T PopFirstInternal()
+        {
+            if (Count <= 0) throw new InvalidOperationException("no items to remove.");
+
+            var temp = array[Start];
+            array[Start] = default(T);
             IncrementStart();
             Count--;
+            version++;
             return temp;
         }
 
@@ -268,12 +389,21 @@ namespace BPlusTree
         /// <exception cref="InvalidOperationException">no items to remove.</exception>
         public T PopLast()
         {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not remove from fixed size collection.");
+
+            return PopLastInternal();
+        }
+
+        private T PopLastInternal()
+        {
             if (Count <= 0) throw new InvalidOperationException("no items to remove.");
-            
+
             Count--;
             var end = End;
             var temp = array[end];
             array[end] = default(T);
+            version++;
             return temp;
         }
 
@@ -283,11 +413,12 @@ namespace BPlusTree
         /// <exception cref="IndexOutOfRangeException"></exception>
         public T InsertPopFirst(int index, T item)
         {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
             if (OutOfRangeExclusive(index)) throw new IndexOutOfRangeException(nameof(index));
             
             if (index == 0) return item;
-            var value = PopFirst();
-            Insert(index - 1, item);
+            var value = PopFirstInternal();
+            InsertInternal(index - 1, item);
             return value;
         }
 
@@ -297,13 +428,32 @@ namespace BPlusTree
         /// <exception cref="IndexOutOfRangeException"></exception>
         public T InsertPopLast(int index, T item)
         {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
             if (OutOfRangeExclusive(index)) throw new IndexOutOfRangeException(nameof(index));
 
             if (index == Count) return item;
-            var value = PopLast();
-            Insert(index, item);
+            var value = PopLastInternal();
+            InsertInternal(index, item);
             return value;
         }
+
+        ///// <summary>
+        ///// pushes an item to the first of this array and removes item at specified index without altering length and capacity.
+        ///// </summary>
+        ///// <exception cref="IndexOutOfRangeException"></exception>
+        //public T PushFirstRemoveAt(int index, T item)
+        //{
+        //    throw new NotImplementedException();
+        //}
+
+        ///// <summary>
+        ///// pushes an item to the first of this array and removes item at specified index without altering length and capacity.
+        ///// </summary>
+        ///// <exception cref="IndexOutOfRangeException"></exception>
+        //public T PushLastRemoveAt(int index, T item)
+        //{
+        //    throw new NotImplementedException();
+        //}
 
         #endregion
 
@@ -342,27 +492,37 @@ namespace BPlusTree
         }
 
         /// <summary>
-        /// inserts an item in order using binarysearch.
+        /// inserts an item in order using binary search.
+        /// this method does not work correctly if existing array items are not in order.
         /// </summary>
         public void InsertOrdered(T item) => InsertOrdered(item, Comparer<T>.Default);
 
         /// <summary>
-        /// inserts an item in order using binarysearch.
+        /// inserts an item in order using binary search.
+        /// this method does not work correctly if existing array items are not in order.
         /// </summary>
         public void InsertOrdered(T item, IComparer<T> comparer)
         {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not insert to fixed size collection.");
             var find = BinarySearch(item, comparer);
             if (find < 0) find = ~find;
-            Insert(find, item);
+            InsertInternal(find, item);
         }
 
-        //public bool RemoveOrdered(T item)
-        //{
-        //    var find = BinarySearch(item);
-        //    if (find < 0) return false;
-        //    RemoveAt(find);
-        //    return true;
-        //}
+        /// <summary>
+        /// removes an item using binary search. 
+        /// this method is faster than <see cref="Remove(T)"/> but does not work correctly if array is not sorted.
+        /// </summary>
+        public bool RemoveOrdered(T item)
+        {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not insert to fixed size collection.");
+            var find = BinarySearch(item);
+            if (find < 0) return false;
+            RemoveAtInternal(find);
+            return true;
+        }
 
         #endregion
 
@@ -434,10 +594,23 @@ namespace BPlusTree
         }
 
         /// <summary>
+        /// Replace an item at specified index and return the replaced item.
+        /// </summary>
+        public T Replace(int index, T value)
+        {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+
+            var replace = this[index];
+            Set(index, value);
+            version++;
+            return replace;
+        }
+
+        /// <summary>
         /// gets or sets an item from specified index.
         /// </summary>
         /// <exception cref="IndexOutOfRangeException"></exception>
-        public virtual T this[int index]
+        public T this[int index]
         {
             get
             {
@@ -446,43 +619,47 @@ namespace BPlusTree
             }
             set
             {
+                if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
                 if (OutOfRange(index)) throw new IndexOutOfRangeException(nameof(index));
                 Set(index, value);
+                version++;
             }
         }
 
         #endregion
 
-        #region Clear/Expand
+        #region Clear/Expand/TrimCapacity
         
         /// <summary>
         /// expands the capacity of this array so it can hold more items.
         /// </summary>
         private void ExpandCapacity()
         {
-            var newCap = Capacity == 0 ? 4 : Capacity * 2;
-            var newArr = new T[newCap];
-
-            if (IsRotated)
-            {
-                Array.Copy(array, Start, newArr, 0, Capacity - Start);
-                Array.Copy(array, 0, newArr, Capacity - Start, Start + Count - Capacity);
-            }
-            else
-            {
-                Array.Copy(array, Start, newArr, 0, Count);
-            }
-
-            array = newArr;
-            Start = 0;
+            if (Constraints == RingArrayConstraints.FixedCapacity) throw new InvalidOperationException("can not expand fixed capacity collection.");
+            var newCap = Capacity == 0 ? DefaultCapacity : Capacity * 2;
+            Capacity = newCap;
         }
 
-        /// <inheritdoc />
-        public virtual void Clear()
+        /// <summary>
+        /// Clear items from this array. Count will become zero.
+        /// </summary>
+        public void Clear()
         {
+            Clear(true);
+        }
+
+        /// <summary>
+        /// Clear items from this array. default value of resetCount is true.
+        /// </summary>
+        /// <param name="resetCount">if true, Count will become zero. otherwise, only items get cleared without changing the Count.</param>
+        public void Clear(bool resetCount)
+        {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (resetCount && Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not remove from fixed size collection.");
             Array.Clear(array, 0, array.Length);
             Start = 0;
-            Count = 0;
+            if(resetCount) Count = 0;
+            version++;
         }
 
         /// <inheritdoc />
@@ -500,6 +677,25 @@ namespace BPlusTree
             {
                 Array.Copy(this.array, Start, array, arrayIndex, Count);
             }
+        }
+
+        /// <summary>
+        /// Trim capacity, readonly or fixed size array can be trimmed but fixed capacity array can not be trimmed.
+        /// </summary>
+        public void TrimCapacity()
+        {
+            if (Constraints == RingArrayConstraints.FixedCapacity) throw new InvalidOperationException("can not trim fixed capacity collection.");
+            if (Count == Capacity) return;
+            Capacity = Count;
+        }
+
+        /// <summary>
+        /// Unrotate array if it is rotated.
+        /// </summary>
+        public void UnRotate()
+        {
+            if (!IsRotated) return;
+            Capacity = Capacity;
         }
 
         #endregion
@@ -568,7 +764,9 @@ namespace BPlusTree
         /// </summary>
         public RingArray<T> SplitRight()
         {
-            var right = new RingArray<T>(Capacity);
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not split fixed size collection.");
+            var right = new RingArray<T>(new T[Capacity], 0, 0, Constraints);
 
             var lr = Count / 2; // length of right side
             var lrc = 1 + ((Count - 1) / 2); // length of right (ceiling of Length/2)
@@ -593,6 +791,7 @@ namespace BPlusTree
                 Array.Clear(array, 0, remaining);
             }
 
+            version++;
             return right;
         }
 
@@ -602,6 +801,8 @@ namespace BPlusTree
         /// <exception cref="InvalidOperationException"></exception>
         public void MergeLeft(RingArray<T> right)
         {
+            if (Constraints == RingArrayConstraints.ReadOnly) throw new InvalidOperationException("can not modify readonly collection.");
+            if (Constraints == RingArrayConstraints.FixedSize) throw new InvalidOperationException("can not merge to fixed size collection.");
             if (Count + right.Count > Capacity)
                 throw new InvalidOperationException("can not merge, there is not enough capacity for this array.");
 
@@ -683,6 +884,7 @@ namespace BPlusTree
             }
 
             Count += right.Count; // correct array length.
+            version++;
         }
 
         #endregion
@@ -696,14 +898,16 @@ namespace BPlusTree
 
         IEnumerator<T> IEnumerable<T>.GetEnumerator() => GetEnumerator();
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
-
+        
         /// <summary>
         /// struct enumerator for <see cref="RingArray{T}"/>.
         /// </summary>
         public struct Enumerator : IEnumerator<T>
         {
-            readonly RingArray<T> array;
-            int position;
+            private RingArray<T> array;
+            private int version;
+            private int position; // points to next position after current.
+            private T current;
 
             /// <summary>
             /// initializes a new instance of <see cref="Enumerator"/>.
@@ -711,31 +915,81 @@ namespace BPlusTree
             public Enumerator(RingArray<T> array)
             {
                 this.array = array;
-                position = -1;
+                version = array?.version ?? 0;
+                position = 0;
+                current = default;
             }
 
             /// <inheritdoc />
-            public T Current => array[position];
+            public T Current
+            {
+                get
+                {
+                    if (array == null)
+                        throw new InvalidOperationException("enumerator has no array. it's either disposed or initialized with null array.");
+                    if (version != array.version)
+                        throw new InvalidOperationException("collection was modified.");
+                    if (position == 0)
+                        throw new InvalidOperationException("enumerator cursor is not moved yet.");
+                    if (position == array.Count + 1)
+                        throw new InvalidOperationException("enumerator cursor has reached to the end.");
+                    return current;
+                }
+            }
 
             /// <inheritdoc />
             public bool MoveNext()
             {
                 if (array == null) return false;
-                if (position + 1 == array.Count) return false;
-                position++;
-                return true;
+                if (version != array.version) throw new InvalidOperationException("collection was modified.");
+
+                if (position < array.Count)
+                {
+                    current = array.Get(position++);
+                    return true;
+                }
+                else
+                {
+                    position = array.Count + 1; // end marker
+                    current = default;
+                    return false;
+                }
             }
 
             /// <inheritdoc />
             public void Reset()
             {
-                position = -1;
+                version = array?.version ?? 0;
+                position = 0;
+                current = default;
             }
 
             object IEnumerator.Current => Current;
 
             /// <inheritdoc />
-            public void Dispose() => Reset();
+            public void Dispose()
+            {
+                array = null;
+                Reset();
+            }
+        }
+
+        #endregion
+
+        #region Debug View
+
+        [DebuggerNonUserCode]
+        private sealed class DebugView
+        {
+            private readonly RingArray<T> _array;
+
+            private DebugView(RingArray<T> array)
+            {
+                _array = array ?? throw new ArgumentNullException(nameof(array));
+            }
+
+            [DebuggerBrowsable(DebuggerBrowsableState.RootHidden)]
+            public T[] Items => _array.ToArray(); 
         }
 
         #endregion
