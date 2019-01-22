@@ -55,11 +55,11 @@ bool AddOrUpdate(TKey key, TValue value,
 AddOrUpdateFromArg<TArg>(TKey key, TArg arg, 
   Func<(TKey key, TArg arg), TValue> addFunction, 
   Func<(TKey key, TArg arg, TValue oldValue), TValue> updateFunction)
----
+```
 
 # Remove Methods
 
----c#
+```c#
 // remove and take first entry.
 // returns true if first entry is removed. (if tree is not empty)
 bool RemoveFirst(out TValue first)
@@ -71,7 +71,7 @@ bool RemoveLast(out TValue last)
 // remove and take an entry.
 // returns true if the entry is removed.
 bool Remove(TKey key, out TValue value)
----
+```
 
 # Other Methods
 
